@@ -165,9 +165,10 @@ Parse and assert against the expected-event set built in Phase A:
    `system administration` role, but per `GLOBAL_ROLE_SEED` that role lacks `audit-logs:decrypt`
    and cannot call the export at all. Determine whether the redaction path is reachable by any
    role; if not, it is dead code / a gap. (A `supervisor`/`admin` export is NOT redacted.)
-   **Observed:** Pending — requires a dev-env run over VPN (npm run setup:auth); not yet executed
-   in the authoring environment. The characterize_denied_rows step will print the denied-row
-   FINDING once run.
+   **Observed (2026-07-06, local stack):** `sysops1` (`system administration`) lacks
+   `audit-logs:decrypt` and gets **403** on the CoC export endpoint — confirming the role can never
+   reach the generator, so the `system administration` redaction branch is **unreachable by the
+   seeded roles (likely dead code)**. Candidate finding for the DEMS team.
 2. **Denied rows may not reach the file CoC (generalized).** A 403 is rejected at auth *before*
    the controller attaches `reference_data.file_ids`, and the CoC file trail is a JSONB containment
    match on that field. So denied attempts (steps 10–13) likely produce audit rows that do **not**
@@ -175,20 +176,60 @@ Parse and assert against the expected-event set built in Phase A:
    confirm this: if denied rows are absent from the file-scoped view, that is a documented finding
    (a potential audit-coverage gap), and the denied-row assertions degrade to an all-logs query
    (by actor `user_id` + `action` + recent `timestamp`) rather than a file-scoped one.
-   **Observed:** Pending — requires a dev-env run over VPN (npm run setup:auth); not yet executed
-   in the authoring environment. The characterize_denied_rows step will print the denied-row
-   FINDING once run.
+   **Observed (2026-07-06, local stack): PARTIAL capture — depends on where the denial fires.**
+   `officer2`'s *scope*-denial (a `standard user` denied by visibility scope; 403) **DOES** appear
+   in the file CoC as two `view` · `DENIED` · `Failure` rows (records + files). But `iauser`
+   (role-less) and `sysops1` (system) *role*-denials, and the decrypt-denied `officer1` CoC-export
+   attempt, do **NOT** appear in the file-scoped audit view/CoC — their 403 fires at the permission
+   layer before `file_id` reaches `reference_data`. So a chain-of-custody report silently omits
+   role-level denied-access attempts on that file. Candidate finding for the DEMS team.
 3. **Retention actions emit no audit row.** `agency_retention_controller` PUT (add) / DELETE
    (remove) handlers carry `# TODO add auditing` and never call `add_audit_data`; only the POST
    (set-full) path attaches `reference_data`. So `add_retention`/`remove_retention` are currently
    **unauditable** — recorded here as a gap, and the reason retention is dropped from the lifecycle.
-   **Observed:** Pending — requires a dev-env run over VPN (npm run setup:auth); not yet executed
-   in the authoring environment. The characterize_denied_rows step will print the denied-row
-   FINDING once run.
+   **Observed (2026-07-06):** not exercised at runtime (retention is out of the file lifecycle);
+   remains a source-level gap confirmed by inspection.
 4. **Async audit lag.** Audit rows are persisted by a worker off a Redis stream, and
    `upload_completed` fires in the async unquarantine pipeline (not the request). Phase C / the
    inline audit checks must poll/retry (as `record_steps.py::audit_event_exists` already does)
    before asserting a row exists or the trail is complete.
+   **Observed (2026-07-06, local stack):** confirmed — the minimal happy-path scenario exported CoC
+   immediately and got **404 "File not found in audit logs"**; the rows landed within seconds. Also
+   **`upload_completed` never fired locally** (the async unquarantine/finalize pipeline does not
+   complete in the local stack), so any assertion expecting it will time out.
+
+## 8a. Live local-stack validation results (2026-07-06)
+
+Validated **without VPN** by running the suite against the **local DEMS stack** (`make start-db-only`
+→ `make up-detached` → `make db-migrate`) and minting role tokens from local Keycloak via the
+**`dems-dev-ropc`** password-grant client (seeded `dems_*` users in `dev_identities.py`). This proves
+VPN was never the dependency — a running stack + Keycloak tokens are. An env-gated ROPC token path was
+added to the QA `conftest.py` (`DEMS_ROPC=1`) to enable it.
+
+**Actual audit verbs + categories emitted (file-scoped CoC CSV), vs the plan's assumptions:**
+
+| Action performed | Actual verb(s) | Actual Category | Plan assumed | Discrepancy |
+|---|---|---|---|---|
+| create record | `create` | — (record-scoped) | `create` INGEST | Not in FILE CoC — record-scoped only |
+| create file resource + upload bytes | `edit` + `upload` | INGEST | `upload_started`/`upload_completed` | Real verbs are `upload`+`edit`; started/completed NOT emitted |
+| view | `view` | ACCESS | `view` ACCESS | ✓ match |
+| play/stream | `play` | ACCESS | `play` ACCESS | ✓ match (Role column blank for play) |
+| download | `download` | **CUSTODY** | ACCESS | **Category mismatch — likely product bug** |
+| privatize | `file_privatized` | **INGEST** | CUSTODY | **Category mismatch — likely product bug (privatize as INGEST is wrong for CoC)** |
+| un-privatize | `file_unprivatized` | **INGEST** | CUSTODY | **Category mismatch — likely product bug** |
+| share | `share` | (blocked) | `share` CUSTODY | Endpoint requires an `expiry` field (400 without it) |
+
+**Test-code contract corrections the run surfaced (test model FROZEN per decision — recorded, not applied):**
+- `POST /records/files/{fid}/view` requires a non-empty body → send `json={}` (already applied in this branch).
+- `POST /records/share/record/{rid}/file` requires `expiry` (hours) → 400 without it.
+- The minimal happy-path scenario must poll for ≥1 audit row before exporting (async lag).
+- `ALLOWED_LIFECYCLE` should be `edit, upload, view, play, download, file_privatized, share, share_revoked, file_unprivatized` (drop `create`, `upload_started`, `upload_completed`).
+
+**DEMS product-team candidate findings (per "assert current behavior + file findings" decision):**
+- **F5:** `download` categorized `CUSTODY` (expected `ACCESS`).
+- **F6:** `file_privatized`/`file_unprivatized` categorized `INGEST` (expected `CUSTODY`) — misrepresents custody events in the CoC timeline color-banding.
+- **F7:** Role-level denied-access attempts (role-less/system users, decrypt-denied export) are **absent** from the file CoC; only scope-level denials are captured.
+- **F8:** `system administration` redaction branch in the CoC generator appears **unreachable** (role lacks `audit-logs:decrypt`).
 5. **Environment.** Tests run against the shared dev env (`dems-dev.versaterm.org`) over VPN,
    authenticating via Playwright-saved role sessions (`npm run setup:auth`). All assertions must
    scope to the `file_id`/`record_id` created in the run — never assume a clean audit table.
