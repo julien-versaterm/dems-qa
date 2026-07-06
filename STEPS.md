@@ -55,6 +55,9 @@ Use these steps to write new scenarios. No TypeScript or Python needed.
 | `When I try to set a retention policy` | @api | |
 
 ## Audit & Chain of Custody
+
+> **Running these (API layer):** a bare `pytest steps/api` currently halts on collection errors from other unrelated dead step modules (`admin_steps.py`/`file_steps.py`/`record_steps.py` bind to feature files that don't exist yet). Run the audit suite by explicit target: `pytest steps/api/audit_steps.py` (and `pytest steps/api/test_coc_helper.py` for the unit tests). Requires VPN + `npm run setup:auth`. Note: the lifecycle scenarios may legitimately fail on the first dev run — per the design's §8 finding 2, denied rows (and possibly some CUSTODY verbs) may not carry `reference_data.file_ids` and so be absent from the file CoC; triage a red result as a product finding first, not a test bug.
+
 | Step | Layer | Notes |
 |---|---|---|
 | `Given an evidence file "{filename}" with a view and a download event` | @api | Minimal CoC setup |
