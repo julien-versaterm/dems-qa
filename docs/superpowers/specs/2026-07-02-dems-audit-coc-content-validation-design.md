@@ -230,6 +230,7 @@ added to the QA `conftest.py` (`DEMS_ROPC=1`) to enable it.
 - **F6:** `file_privatized`/`file_unprivatized` categorized `INGEST` (expected `CUSTODY`) — misrepresents custody events in the CoC timeline color-banding.
 - **F7:** Role-level denied-access attempts (role-less/system users, decrypt-denied export) are **absent** from the file CoC; only scope-level denials are captured.
 - **F8:** `system administration` redaction branch in the CoC generator appears **unreachable** (role lacks `audit-logs:decrypt`).
+- **F9:** A **successful external share is not captured in the file-level CoC.** Confirmed via UI + API on 2026-07-06: creating a share (valid recipient + expiry + reason, `201`, no failed_shares) produces **no `share` audit row scoped to the file** — the file's CoC/audit view shows only `edit`/`upload`/`view`/etc., never `share`. So a chain-of-custody report omits the fact that evidence was shared externally. (Same file-scoping gap class as F7.) Also observed while validating: the external **share endpoint requires an `expiry`** field (400 without it), and a file **cannot be shared once privatized** ("1 file failed to share") — share must precede any restrict.
 5. **Environment.** Tests run against the shared dev env (`dems-dev.versaterm.org`) over VPN,
    authenticating via Playwright-saved role sessions (`npm run setup:auth`). All assertions must
    scope to the `file_id`/`record_id` created in the run — never assume a clean audit table.
