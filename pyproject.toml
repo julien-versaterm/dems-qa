@@ -15,7 +15,7 @@ dependencies = [
 
 [tool.pytest.ini_options]
 testpaths = ["steps/api"]
-python_files = ["*_steps.py"]
+python_files = ["*_steps.py", "test_*.py"]
 markers = [
     "api: marks a scenario as API-layer",
     "ui: marks a scenario as UI-layer",

@@ -34,31 +34,42 @@ def _audit_items(payload):
     return payload.get('data') or payload.get('items') or []
 
 
+def _fetch_audit_items(client, file_id):
+    """Single GET /api/v1/audit/logs?file_id= call; returns items (empty on non-200)."""
+    resp = client.get('/api/v1/audit/logs', params={'file_id': file_id, 'page_size': 500})
+    if resp.status_code == 200:
+        return _audit_items(resp.json())
+    return []
+
+
 def poll_audit_rows(client, file_id, timeout=30, interval=3):
     """Poll GET /api/v1/audit/logs?file_id= until non-empty or timeout; returns items."""
     deadline = time.monotonic() + timeout
     items = []
     while True:
-        resp = client.get('/api/v1/audit/logs', params={'file_id': file_id, 'page_size': 500})
-        if resp.status_code == 200:
-            items = _audit_items(resp.json())
-            if items:
-                return items
+        items = _fetch_audit_items(client, file_id)
+        if items:
+            return items
         if time.monotonic() >= deadline:
             return items
         time.sleep(interval)
 
 
 def wait_for_action(client, file_id, action, timeout=30):
-    """Poll audit rows until one with the given action appears; else None."""
+    """Poll audit rows until one with the given action appears; else None.
+
+    Never sleeps past `deadline`: each iteration clamps its sleep to the
+    remaining time and returns None promptly once the deadline passes.
+    """
     deadline = time.monotonic() + timeout
     while True:
-        for row in poll_audit_rows(client, file_id, timeout=0, interval=0):
+        for row in _fetch_audit_items(client, file_id):
             if row.get('action') == action:
                 return row
-        if time.monotonic() >= deadline:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
             return None
-        time.sleep(3)
+        time.sleep(min(3, remaining))
 
 
 def extract_pdf_text(pdf_bytes):
