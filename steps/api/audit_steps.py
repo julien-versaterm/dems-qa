@@ -1,90 +1,65 @@
 # steps/api/audit_steps.py
-import os
-from pytest_bdd import scenarios, given, when, then
+import uuid as _uuid
+
+from pytest_bdd import given
+from pytest_bdd import scenarios
+from pytest_bdd import then
+from pytest_bdd import parsers
+from pytest_bdd import when
 
 from conftest import api_client
+from upload_helper import upload_file
 
 scenarios('../../features/audit/chain-of-custody.feature')
 
+ROLE_FIXTURE = {
+    'officer1': 'officer_token',
+    'officer2': 'officer2_token',
+    'sergeant1': 'sergeant_token',
+    'admin': 'admin_token',
+    'iauser': 'iauser_token',
+    'sysops1': 'sysops_token',
+}
 
-@given('a file has upload, view, and download events')
-def file_with_events(context, officer_token):
-    # Setup: create a record, upload a file, view it, download it — generates audit events
-    import uuid as _uuid
-    setup_client = api_client(officer_token)
-    context['token'] = officer_token
-    context['client'] = setup_client
 
-    # Create record
-    # RESOLVED: actual endpoint confirmed from source
+@given(parsers.parse('an evidence file "{filename}" with a view and a download event'))
+def evidence_file_with_events(context, officer_token, filename):
+    client = api_client(officer_token)
+    context['client'] = client
     uid = str(_uuid.uuid4())[:8]
-    r = setup_client.post('/api/v1/records', json={'category': 'id', 'external_record_id': f'[E2E] Audit {uid}'})
-    assert r.status_code == 201, f"Setup failed: {r.text}"
+    r = client.post('/api/v1/records', json={'category': 'id', 'external_record_id': f'[E2E] CoC {uid}'})
+    assert r.status_code == 201, f"create record: {r.status_code} {r.text}"
     context['record_id'] = r.json()['record_id']
-
-    # Upload file
-    from upload_helper import upload_file as _upload
-    context['file_id'] = _upload(setup_client, context['record_id'], 'sample.pdf')
-
-    # View file (triggers VIEW audit event) — use /status endpoint (bare file ID returns 405)
-    r3 = setup_client.get(f"/api/v1/records/{context['record_id']}/files/{context['file_id']}/status")
-    assert r3.status_code == 200
-
-    # Download file (triggers DOWNLOAD audit event)
-    # Accept 404 — file content may not be immediately accessible after upload
-    r4 = setup_client.get(f"/api/v1/records/{context['record_id']}/files/{context['file_id']}/download")
-    if r4.status_code not in (200, 206, 404):
-        assert False, f"Download failed unexpectedly: {r4.status_code}: {r4.text}"
-
-
-@when('I export the chain of custody for that file')
-def export_chain_of_custody(context):
-    # RESOLVED: actual endpoint confirmed from source
-    # Returns a PDF (Content-Type: application/pdf), NOT JSON
-    resp = context['client'].get(
-        f"/api/v1/audit/chain-of-custody/files/{context['file_id']}/export",
-        params={"format": "pdf"},
-        headers={"X-Download-Reason": "E2E test chain of custody export"},
+    context['file_id'] = upload_file(client, context['record_id'], filename)
+    # view (204) + download (needs reason header)
+    v = client.post(f"/api/v1/records/files/{context['file_id']}/view")
+    assert v.status_code in (200, 204), f"view: {v.status_code} {v.text}"
+    d = client.get(
+        f"/api/v1/records/files/{context['file_id']}/download",
+        headers={'X-Download-Reason': 'E2E CoC content validation'},
     )
-    if resp.status_code == 404:
-        import pytest
-        pytest.skip("File not found in CoC audit logs — chain of custody may require longer indexing time or specific workflow")
-    assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
-    assert resp.headers.get('content-type', '').startswith('application/pdf'), \
-        f"Expected PDF response, got content-type: {resp.headers.get('content-type')}"
-    context['coc_pdf_response'] = resp
+    assert d.status_code in (200, 206), f"download: {d.status_code} {d.text}"
 
 
-@then('the export should contain all audit events in order')
-def events_in_order(context):
-    # RESOLVED: CoC export is a PDF — assert 200 + PDF content-type (already checked in export step)
-    # Audit log event ordering assertions use GET /api/v1/audit/logs, not the CoC PDF
-    resp = context['coc_pdf_response']
-    assert resp.status_code == 200, f"Expected 200, got {resp.status_code}"
-    assert resp.headers.get('content-type', '').startswith('application/pdf'), \
-        f"Expected PDF, got: {resp.headers.get('content-type')}"
-    # NOTE: JSON event ordering cannot be asserted from a PDF response.
-    # To assert event ordering, use GET /api/v1/audit/logs?file_id={file_id} instead.
+@when(parsers.parse('I export the chain of custody as "{role}" in "{fmt}"'))
+def export_coc(context, request, role, fmt):
+    token = request.getfixturevalue(ROLE_FIXTURE[role])
+    client = api_client(token)
+    resp = client.get(
+        f"/api/v1/audit/chain-of-custody/files/{context['file_id']}/export",
+        params={'format': fmt},
+        headers={'X-Download-Reason': 'E2E CoC content validation'},
+    )
+    context['coc_response'] = resp
+    context['coc_format'] = fmt
 
 
-@then("each event should include the actor's name and timestamp")
-def events_have_actor_and_timestamp(context):
-    # RESOLVED: CoC export is a PDF — assert PDF response
-    # NOTE: audit log field assertions (actor, timestamp) use GET /api/v1/audit/logs?file_id={file_id}
-    # which returns {"items": [{"event_type": "...", "actor": "...", "timestamp": "..."}], "total": N}
-    resp = context['coc_pdf_response']
-    assert resp.status_code == 200, f"Expected 200, got {resp.status_code}"
-    assert resp.headers.get('content-type', '').startswith('application/pdf'), \
-        f"Expected PDF, got: {resp.headers.get('content-type')}"
-
-
-@when('I try to access the audit log')
-def try_access_audit_log(context):
-    import pytest
-    resp = context['client'].get('/api/v1/audit/logs')
-    context['last_response'] = resp
-    if resp.status_code == 200:
-        pytest.skip("Standard user has audit log access on this dev environment — 403 scenario does not apply to current user role")
-
-# NOTE: @then('I should receive a 403 error') is defined in conftest.py
-# and is available to all test files automatically — do NOT redefine it here.
+@then('the CoC export succeeds')
+def coc_export_succeeds(context):
+    resp = context['coc_response']
+    assert resp.status_code == 200, f"CoC export: {resp.status_code} {resp.text}"
+    ctype = resp.headers.get('content-type', '')
+    if context['coc_format'] == 'csv':
+        assert 'text/csv' in ctype, f"expected csv, got {ctype}"
+    else:
+        assert ctype.startswith('application/pdf'), f"expected pdf, got {ctype}"
