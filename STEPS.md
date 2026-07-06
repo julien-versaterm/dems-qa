@@ -57,11 +57,16 @@ Use these steps to write new scenarios. No TypeScript or Python needed.
 ## Audit & Chain of Custody
 | Step | Layer | Notes |
 |---|---|---|
-| `And a file has upload, view, and download events` | @api | Creates setup state: record + file + 3 audit events |
-| `When I export the chain of custody for that file` | @api | |
-| `Then the export should contain all audit events in order` | @api | Asserts events ordered by timestamp |
-| `And each event should include the actor's name and timestamp` | @api | |
-| `When I try to access the audit log` | @api | Tests unauthorized access (403 expected) |
+| `Given an evidence file "{filename}" with a view and a download event` | @api | Minimal CoC setup |
+| `Given officer1 performs the full allowed lifecycle on "{filename}"` | @api | create→upload→view→play→download→privatize→share→revoke→unprivatize, each verified + logged |
+| `When I export the chain of custody as "{role}" in "{fmt}"` | @api | fmt = csv or pdf; role needs audit decrypt (sergeant1/admin) |
+| `Then the CoC export succeeds` | @api | 200 + correct content-type |
+| `Then the CoC CSV contains every allowed lifecycle event with correct category and outcome` | @api | |
+| `Then the CoC events are in timestamp order` | @api | |
+| `Then the CoC PDF text contains each allowed action verb` | @api | pdfplumber text extraction |
+| `When denied actors attempt to access the file` | @api | iauser/sysops1/officer2 + standard-user CoC export |
+| `Then each denied attempt returns 403` | @api | officer2 non-403 tolerated (env alias) |
+| `Then denied audit rows are characterized against the file CoC` | @api | prints a finding; see design §8 |
 
 ## Errors
 | Step | Layer |
