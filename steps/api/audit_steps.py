@@ -84,7 +84,7 @@ ALLOWED_LIFECYCLE = [
 
 
 @given(parsers.parse('officer1 performs the full allowed lifecycle on "{filename}"'))
-def full_allowed_lifecycle(context, officer_token, filename):
+def full_allowed_lifecycle(context, officer_token, sergeant_token, filename):
     client = api_client(officer_token)
     context['client'] = client
     uid = str(_uuid.uuid4())[:8]
@@ -144,9 +144,17 @@ def full_allowed_lifecycle(context, officer_token, filename):
     meta2 = client.get(f"/api/v1/records/{rid}/files/{fid}/metadata")
     assert meta2.json().get('lock') is None, f"expected cleared lock, got {meta2.json().get('lock')}"
 
-    # inline audit-row verification (poll for async rows)
+    # inline audit-row verification (poll for async rows).
+    # officer1 is a "standard user" with no audit-logs:view permission, so
+    # rows must be read back with a view+decrypt-capable role (sergeant1 is
+    # in the same agency/integration as officer1 and can see its audit trail).
+    audit_client = api_client(sergeant_token)
+    precheck = audit_client.get('/api/v1/audit/logs', params={'file_id': fid, 'page_size': 1})
+    assert precheck.status_code == 200, \
+        f"audit_client cannot read audit logs: {precheck.status_code} {precheck.text}"
+
     for expected in ALLOWED_LIFECYCLE:
-        row = wait_for_action(client, fid, expected['action'], timeout=45)
+        row = wait_for_action(audit_client, fid, expected['action'], timeout=45)
         assert row is not None, f"audit row missing for action {expected['action']!r}"
         code = row.get('http_response_code')
         assert code is None or 200 <= int(code) < 300, \
@@ -155,11 +163,18 @@ def full_allowed_lifecycle(context, officer_token, filename):
     context['expected_allowed'] = ALLOWED_LIFECYCLE
 
 
+def _coc_rows(context):
+    """Parse the CoC CSV response once per scenario and cache the rows."""
+    if 'coc_rows' not in context:
+        resp = context['coc_response']
+        assert resp.status_code == 200, f"CoC csv: {resp.status_code} {resp.text}"
+        context['coc_rows'] = parse_coc_csv(resp.text)
+    return context['coc_rows']
+
+
 @then('the CoC CSV contains every allowed lifecycle event with correct category and outcome')
 def csv_contains_allowed(context):
-    resp = context['coc_response']
-    assert resp.status_code == 200, f"CoC csv: {resp.status_code} {resp.text}"
-    rows = parse_coc_csv(resp.text)
+    rows = _coc_rows(context)
     missing = []
     for expected in context['expected_allowed']:
         row = find_row(rows, expected['action'])
@@ -174,5 +189,5 @@ def csv_contains_allowed(context):
 
 @then('the CoC events are in timestamp order')
 def csv_timestamps_ordered(context):
-    rows = parse_coc_csv(context['coc_response'].text)
+    rows = _coc_rows(context)
     assert timestamps_sorted(rows), "CoC rows are not in non-decreasing timestamp order"
