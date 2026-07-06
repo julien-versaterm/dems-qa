@@ -40,7 +40,7 @@ def evidence_file_with_events(context, officer_token, filename):
     context['record_id'] = r.json()['record_id']
     context['file_id'] = upload_file(client, context['record_id'], filename)
     # view (204) + download (needs reason header)
-    v = client.post(f"/api/v1/records/files/{context['file_id']}/view")
+    v = client.post(f"/api/v1/records/files/{context['file_id']}/view", json={})
     assert v.status_code in (200, 204), f"view: {v.status_code} {v.text}"
     d = client.get(
         f"/api/v1/records/files/{context['file_id']}/download",

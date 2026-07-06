@@ -49,7 +49,7 @@ def run_allowed_lifecycle(officer_client, audit_client, filename):
     fid = upload_file(officer_client, rid, filename)
 
     # view (204)
-    v = officer_client.post(f"/api/v1/records/files/{fid}/view")
+    v = officer_client.post(f"/api/v1/records/files/{fid}/view", json={})
     assert v.status_code in (200, 204), f"view: {v.status_code} {v.text}"
 
     # play/stream (media file -> 200/206)
@@ -128,7 +128,7 @@ def run_denied_probes(clients, rid, fid):
     for probe in DENIED_PROBES:
         client = clients[probe['role']]
         if probe['verb'] == 'view':
-            resp = client.post(f"/api/v1/records/files/{fid}/view")
+            resp = client.post(f"/api/v1/records/files/{fid}/view", json={})
         elif probe['verb'] == 'download':
             resp = client.get(f"/api/v1/records/files/{fid}/download",
                               headers={'X-Download-Reason': 'denied probe'})

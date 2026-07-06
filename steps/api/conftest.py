@@ -23,6 +23,40 @@ ROLE_AUTH_FILE = {
     "sysops":   "sysops.json",
 }
 
+# Local-stack mode: when DEMS_ROPC=1, mint role tokens directly from local
+# Keycloak via the dems-dev-ropc password-grant client instead of Playwright
+# sessions. Maps QA role keys -> seeded local (username, password).
+ROPC_CREDS = {
+    "officer":  ("dems_officer1", "demsofficer1pass"),
+    "officer2": ("dems_officer2", "demsofficer2pass"),
+    "sergeant": ("dems_sergeant1", "demssergeant1pass"),
+    "admin":    ("dems_admin1", "demsadmin1pass"),
+    "iauser":   ("dems_iauser", "demsiauserpass"),
+    "sysops":   ("sysops1", "sysops1pass"),
+}
+ROPC_TOKEN_URL = os.environ.get(
+    "KEYCLOAK_TOKEN_URL",
+    "http://localhost:8080/oidc/realms/dems/protocol/openid-connect/token",
+)
+ROPC_CLIENT_ID = os.environ.get("ROPC_CLIENT_ID", "dems-dev-ropc")
+
+
+def _fetch_token_ropc(role: str) -> str:
+    """Local-stack path: Keycloak resource-owner password grant (no browser)."""
+    username, password = ROPC_CREDS[role]
+    resp = httpx.post(
+        ROPC_TOKEN_URL,
+        data={
+            "grant_type": "password",
+            "client_id": ROPC_CLIENT_ID,
+            "username": username,
+            "password": password,
+        },
+        timeout=10,
+    )
+    resp.raise_for_status()
+    return resp.json()["access_token"]
+
 
 def fetch_token_from_session(role: str) -> str:
     """
@@ -30,7 +64,10 @@ def fetch_token_from_session(role: str) -> str:
     Calls /api/auth/session with the NextAuth session cookie — no direct
     Keycloak access grants needed.
     Run `npm run setup:auth` first to create .auth/*.json files.
+    When DEMS_ROPC=1 (local stack), use the ROPC password grant instead.
     """
+    if os.environ.get("DEMS_ROPC") == "1":
+        return _fetch_token_ropc(role)
     auth_file = os.path.join(AUTH_DIR, ROLE_AUTH_FILE[role])
     if not os.path.exists(auth_file):
         raise FileNotFoundError(
